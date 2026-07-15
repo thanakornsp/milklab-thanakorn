@@ -13,10 +13,10 @@ import argparse
 import json
 import os
 import sys
-
+from datetime import datetime
 from dotenv import load_dotenv
 from google import genai
-
+from sales_logger import append_to_sheet, query_sales, send_notification
 
 TOOL_SCHEMA = [
     {
@@ -63,7 +63,45 @@ def parse_command(cmd: str, api_key: str | None = None) -> dict:
     Returns dict {"tool": <name>, "args": <dict>}
     Raises RuntimeError ถ้า parse ไม่ได้
     """
-    raise NotImplementedError("Implement in Session 2 Lab 2.3 (TODO 1)")
+    if api_key is None:
+        api_key = os.getenv("GOOGLE_API_KEY")
+
+    if not api_key:
+        raise RuntimeError("GOOGLE_API_KEY not found")
+
+    client = genai.Client(api_key=api_key)
+
+    prompt = f"""คุณเป็นตัวช่วยแปลงคำสั่งภาษาไทยเป็น tool call
+
+Tools ที่ใช้ได้:
+{json.dumps(TOOL_SCHEMA, ensure_ascii=False, indent=2)}
+
+คำสั่งจากผู้ใช้:
+{cmd}
+
+ตอบกลับเป็น JSON เท่านั้น โดยใช้รูปแบบ:
+{{"tool": "ชื่อ tool", "args": {{}}}}
+
+ห้ามตอบข้อความอื่น และห้ามมี markdown backtick
+"""
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+    )
+
+    text = response.text.strip()
+    text = text.replace("```json", "").replace("```", "").strip()
+
+    try:
+        tool_call = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"parse JSON ไม่ได้: {text}") from exc
+
+    if "tool" not in tool_call or "args" not in tool_call:
+        raise RuntimeError(f"response ขาด key tool/args: {tool_call}")
+
+    return tool_call
 
 
 def dispatch_tool(tool_call: dict) -> str:
@@ -71,27 +109,107 @@ def dispatch_tool(tool_call: dict) -> str:
 
     Returns: ข้อความสรุปผลที่ tool คืน
     """
-    raise NotImplementedError("Implement in Session 2 Lab 2.3 (TODO 2)")
+    tool_name = tool_call.get("tool")
+    tool_args = tool_call.get("args", {})
 
+    if tool_name == "log_sale":
+        row = append_to_sheet(
+            menu=tool_args["menu"],
+            qty=tool_args["qty"],
+            price=tool_args["price"],
+        )
+
+        total = row["total"]
+
+        try:
+            provider = send_notification(
+                f"บันทึก {row['menu']} x{row['qty']} = {total} บาท"
+            )
+            return (
+                f"บันทึกยอดขายสำเร็จ "
+                f"{row['menu']} x{row['qty']} = {total} บาท "
+                f"และแจ้งเตือนผ่าน {provider}"
+            )
+        except Exception as exc:
+            return (
+                f"บันทึกยอดขายสำเร็จ "
+                f"{row['menu']} x{row['qty']} = {total} บาท "
+                f"แต่ส่งแจ้งเตือนไม่สำเร็จ: {exc}"
+            )
+
+    if tool_name == "send_alert":
+        message = tool_args["message"]
+        provider = send_notification(message)
+        return f"ส่งข้อความแจ้งเตือนผ่าน {provider} สำเร็จ"
+
+    if tool_name == "query_sales":
+        result = query_sales(tool_args["date"])
+
+        return (
+            f"วันที่ {result['date']} "
+            f"มี {result['count']} รายการ "
+            f"ขายรวม {result['total_qty']} ชิ้น "
+            f"ยอดรวม {result['total_sales']} บาท"
+        )
+
+    raise ValueError(f"ไม่รู้จัก tool: {tool_name}")
+
+def write_trace(event: str, data) -> None:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with open("agent_trace.log", "a", encoding="utf-8") as log_file:
+        log_file.write(
+            f"[{timestamp}] {event}: "
+            f"{json.dumps(data, ensure_ascii=False, default=str)}\n"
+        )
 
 def main() -> int:
     load_dotenv()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--cmd", required=True, help="คำสั่งภาษาไทย")
     args = parser.parse_args()
 
     print(f"[USER] {args.cmd}")
+    write_trace("user_input", args.cmd)
 
-    # TODO 3: เรียก parse_command then dispatch_tool then print trace ตาม format ใน session-2.md
-    tool_call = parse_command(args.cmd)
-    print(f"[LLM]  tool={tool_call['tool']} args={tool_call['args']}")
+    try:
+        tool_call = parse_command(args.cmd)
 
-    result = dispatch_tool(tool_call)
-    print(f"[TOOL] {tool_call['tool']} {result}")
-    print(f"[USER] ← {result}")
+        print(
+            f"[LLM]  tool={tool_call['tool']} "
+            f"args={tool_call['args']}"
+        )
 
-    return 0
+        write_trace("llm_response", tool_call)
 
+        result = dispatch_tool(tool_call)
+
+        print(f"[TOOL] {tool_call['tool']} {result}")
+        print(f"[USER] ← {result}")
+
+        write_trace(
+            "tool_result",
+            {
+                "tool": tool_call["tool"],
+                "result": result,
+            },
+        )
+
+        return 0
+
+    except Exception as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+
+        write_trace(
+            "tool_error",
+            {
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+            },
+        )
+
+        return 1
 
 if __name__ == "__main__":
     sys.exit(main())

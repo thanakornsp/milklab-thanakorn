@@ -1,0 +1,4 @@
+[2026-07-15 19:04:32] user_input: "ดูยอดขายวันที่ 2026-07-15"
+[2026-07-15 19:04:34] llm_response: {"tool": "query_sales", "args": {"date": "2026-07-15"}}
+[2026-07-15 19:04:35] tool_result: {"tool": "query_sales", "result": "วันที่ 2026-07-15 มี 3 รายการ ขายรวม 4 ชิ้น ยอดรวม 260.0 บาท"}
+[2026-07-15 19:04:45] tool_error: {"error_type": "ValueError", "message": "ไม่รู้จัก tool: unknown_tool"}

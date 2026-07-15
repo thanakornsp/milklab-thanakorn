@@ -68,6 +68,54 @@ def append_to_sheet(menu: str, qty: int, price: float) -> dict:
         "total": total,
     }
 
+def query_sales(date: str) -> dict:
+    if not date or len(date) != 10:
+        raise ValueError("date ต้องเป็นรูปแบบ YYYY-MM-DD")
+
+    creds_json = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
+    sheet_id = os.getenv("GOOGLE_SHEET_ID")
+
+    if not creds_json:
+        raise RuntimeError("GOOGLE_SHEETS_CREDENTIALS not found")
+
+    if not sheet_id:
+        raise RuntimeError("GOOGLE_SHEET_ID not found")
+
+    creds_dict = json.loads(creds_json)
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    creds = Credentials.from_service_account_info(
+        creds_dict,
+        scopes=scopes,
+    )
+
+    gc = gspread.authorize(creds)
+    spreadsheet = gc.open_by_key(sheet_id)
+    worksheet = spreadsheet.worksheet("Sales")
+
+    records = worksheet.get_all_records()
+
+    matched = []
+
+    for row in records:
+        timestamp = str(row.get("timestamp", ""))
+
+        if timestamp.startswith(date):
+            matched.append(row)
+
+    total_qty = sum(int(row.get("qty", 0)) for row in matched)
+    total_sales = sum(float(row.get("total", 0)) for row in matched)
+
+    return {
+        "date": date,
+        "count": len(matched),
+        "total_qty": total_qty,
+        "total_sales": total_sales,
+    }
 
 def send_notification(message: str) -> str:
     """TODO 2: ส่ง message ไปยัง Telegram bot (ใช้ TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
