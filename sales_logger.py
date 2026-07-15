@@ -11,18 +11,62 @@ then sends a notification via Telegram or LINE bot.
 """
 
 import argparse
+
 import os
 import sys
+import json
+import requests
+import gspread
+
+from google.oauth2.service_account import Credentials
 from datetime import datetime
 
 
 def append_to_sheet(menu: str, qty: int, price: float) -> dict:
-    """TODO 1: ใช้ gspread เปิด Sheet ของตัวเอง แล้ว append_row ด้วย [timestamp, menu, qty, price, total]
 
-    Returns dict {timestamp, menu, qty, price, total} ที่ append แล้ว
-    Raises RuntimeError ถ้า credentials ไม่มี หรือ Sheet ไม่ accessible
-    """
-    raise NotImplementedError("Implement in Session 2 Lab 1.3 (TODO 1)")
+    creds_json = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
+
+    if not creds_json:
+        raise RuntimeError("GOOGLE_SHEETS_CREDENTIALS not found")
+
+    creds_dict = json.loads(creds_json)
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+
+    creds = Credentials.from_service_account_info(
+        creds_dict,
+        scopes=scopes
+    )
+    gc = gspread.authorize(creds)
+    spreadsheet = gc.open_by_key(sheet_id)
+    worksheet = spreadsheet.worksheet("Sales")
+    if not menu or not str(menu).strip():
+        raise ValueError("menu ต้องไม่ว่าง")
+
+    if qty <= 0:
+        raise ValueError("qty ต้องมากกว่า 0")
+
+    if price < 0:
+        raise ValueError("price ต้องไม่ติดลบ")
+
+    total = qty * price
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    row = [timestamp, menu, qty, price, total]
+
+    worksheet.append_row(row)
+
+    return {
+        "timestamp": timestamp,
+        "menu": menu,
+        "qty": qty,
+        "price": price,
+        "total": total,
+    }
 
 
 def send_notification(message: str) -> str:
@@ -32,14 +76,32 @@ def send_notification(message: str) -> str:
     Returns: provider name ที่ใช้ ("telegram" หรือ "line")
     Raises RuntimeError ถ้า no credentials
     """
-    raise NotImplementedError("Implement in Session 2 Lab 1.3 (TODO 2)")
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN หรือ TELEGRAM_CHAT_ID not found")
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+    }
+
+    response = requests.post(url, data=payload, timeout=10)
+    response.raise_for_status()
+
+    return "telegram"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="MilkLab Sales Logger")
     parser.add_argument("--menu", required=True, help="ชื่อเมนู")
     parser.add_argument("--qty", type=int, required=True, help="จำนวนขวด")
-    parser.add_argument("--price", type=float, required=True, help="ราคาต่อขวด")
+    parser.add_argument("--price", type=float,
+                        required=True, help="ราคาต่อขวด")
     args = parser.parse_args()
 
     try:
@@ -53,14 +115,21 @@ def main() -> int:
 
     try:
         # TODO 4: เรียก send_notification ด้วย message ที่บอกยอดที่บันทึก
-        provider = send_notification(f"บันทึก {args.menu} x{args.qty} = {total} บาท")
+        provider = send_notification(
+            f"บันทึก {args.menu} x{args.qty} = {total} บาท")
     except Exception as exc:
-        print(f"[WARN] บันทึก Sheet สำเร็จแต่ส่งแจ้งเตือนล้มเหลว: {exc}", file=sys.stderr)
+        print(
+            f"[WARN] บันทึก Sheet สำเร็จแต่ส่งแจ้งเตือนล้มเหลว: {exc}", file=sys.stderr)
         return 0
 
     print(f"[OK] บันทึกและแจ้งเตือนผ่าน {provider} เรียบร้อย ยอด {total} บาท")
     return 0
 
+
+sheet_id = os.getenv("GOOGLE_SHEET_ID")
+
+if not sheet_id:
+    raise RuntimeError("GOOGLE_SHEET_ID not found")
 
 if __name__ == "__main__":
     sys.exit(main())
