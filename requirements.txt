@@ -14,3 +14,6 @@ faiss-cpu>=1.8.0
 
 # Dev tools
 pytest>=8.0.0
+
+# S3 additional
+numpy>=1.26.0
