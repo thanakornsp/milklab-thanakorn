@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+traces.jsonl
+backups/
+app_s2_backup.py
+menu_kb_s2_backup.md
+requirements_s2_backup.txt
