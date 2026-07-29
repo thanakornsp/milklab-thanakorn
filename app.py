@@ -46,7 +46,7 @@ EMBEDDING_MODEL = (
 
 GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL",
-    "gemini-2.0-flash",
+    "gemini-3.6-flash",
 )
 
 TOP_K = 3
