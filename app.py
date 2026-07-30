@@ -427,12 +427,37 @@ def generate_answer(
             api_key=api_key
         )
 
-        response = (
-            client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-            )
-        )
+        response = None
+        last_error = None
+
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=prompt,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                error_text = str(exc)
+
+                # Retry เฉพาะ error ชั่วคราว 429 หรือ 503
+                if (
+                    "429" not in error_text
+                    and "503" not in error_text
+                    and "UNAVAILABLE" not in error_text
+                    and "RESOURCE_EXHAUSTED" not in error_text
+                ):
+                    raise
+
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+
+        if response is None:
+            raise RuntimeError(
+                "Gemini กำลังมีผู้ใช้งานจำนวนมาก "
+                "กรุณารอสักครู่แล้วลองใหม่อีกครั้ง"
+            ) from last_error
 
         answer = (
             response.text or ""
