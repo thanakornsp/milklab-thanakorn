@@ -14,7 +14,12 @@ jobs:
           fetch-depth: 0
           lfs: true
 
+      - name: Skip deploy when HuggingFace secrets are not configured
+        if: ${{ secrets.HF_TOKEN == '' || secrets.HF_USERNAME == '' }}
+        run: echo "Skipping deploy because HF_TOKEN or HF_USERNAME is not configured."
+
       - name: Push to HuggingFace Space
+        if: ${{ secrets.HF_TOKEN != '' && secrets.HF_USERNAME != '' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_USERNAME: ${{ secrets.HF_USERNAME }}
