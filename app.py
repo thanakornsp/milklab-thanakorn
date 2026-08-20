@@ -1,24 +1,23 @@
-"""MilkLab RAG Chatbot — Session 3.
+"""
+DropExpress Smart Locker AI
 
 Run:
     streamlit run app.py
 
-ระบบทำงานดังนี้:
-1. โหลด menu_kb.md
-2. แบ่งเอกสารเป็น chunks
-3. สร้าง embeddings
-4. เก็บ embeddings ใน FAISS
-5. Retrieve top-k
-6. ส่ง context ให้ Gemini
-7. บันทึก retrieve และ generate spans ลง traces.jsonl
+ระบบ:
+1. RAG สำหรับตอบคำถามเกี่ยวกับ DropExpress
+2. Agent สำหรับทำธุรกรรม
+3. Google Sheets สำหรับบันทึกธุรกรรม
+4. Telegram สำหรับแจ้งเตือน
+5. FAISS สำหรับค้นหา Knowledge Base
+6. Gemini สำหรับ RAG และ Agent
+7. บันทึก trace ลง traces.jsonl และ agent_trace.log
 """
 
 from __future__ import annotations
 
-import json
 import os
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -26,118 +25,127 @@ import faiss
 import numpy as np
 import streamlit as st
 from dotenv import load_dotenv
-from google import genai
 from sentence_transformers import SentenceTransformer
+
+from agent_harness import (
+    parse_command,
+    dispatch_tool,
+)
 
 
 # =========================================================
-# ตั้งค่าหลัก
+# CONFIG
 # =========================================================
 
 load_dotenv()
 
 KB_PATH = Path("locker_kb.md")
-TRACE_PATH = Path("traces.jsonl")
 
 EMBEDDING_MODEL = (
     "sentence-transformers/"
     "paraphrase-multilingual-MiniLM-L12-v2"
 )
 
-GEMINI_MODEL = os.getenv(
-    "GEMINI_MODEL",
-    "gemini-3.6-flash",
-)
-
 TOP_K = 3
 
 
 # =========================================================
-# ฟังก์ชันแบ่งเอกสาร
+# KNOWLEDGE BASE
 # =========================================================
 
-def split_markdown(text: str) -> list[str]:
-    """แบ่ง Markdown ตามหัวข้อ ##
-
-    แต่ละ chunk จะเก็บหัวข้อและเนื้อหาที่เกี่ยวข้องไว้ด้วยกัน
-    เพื่อให้ retrieval เข้าใจบริบทของเนื้อหาได้ดีขึ้น
-    """
-
-    chunks: list[str] = []
-    current_lines: list[str] = []
-
-    for line in text.splitlines():
-        stripped = line.strip()
-
-        if stripped.startswith("## ") and current_lines:
-            chunk = "\n".join(current_lines).strip()
-
-            if chunk:
-                chunks.append(chunk)
-
-            current_lines = [line]
-        else:
-            current_lines.append(line)
-
-    final_chunk = "\n".join(current_lines).strip()
-
-    if final_chunk:
-        chunks.append(final_chunk)
-
-    # ตัด chunk ที่ว่างออก
-    return [
-        chunk
-        for chunk in chunks
-        if chunk.strip()
-    ]
-
-
-# =========================================================
-# TODO 1+2+3
-# โหลดเอกสาร แบ่ง chunk encode และสร้าง FAISS index
-# =========================================================
-
-@st.cache_resource(show_spinner="กำลังโหลดโมเดลและสร้าง FAISS index...")
-def load_index(
-    kb_modified_time: float,
-) -> tuple[
-    SentenceTransformer,
-    faiss.IndexFlatIP,
-    list[str],
-]:
-    """โหลด menu_kb.md, split, encode และสร้าง FAISS index.
-
-    kb_modified_time มีไว้ทำให้ Streamlit สร้าง index ใหม่
-    เมื่อมีการแก้ไฟล์ menu_kb.md
-    """
-
-    # ใช้เป็น cache key เท่านั้น
-    del kb_modified_time
+@st.cache_data
+def load_knowledge_base() -> str:
+    """โหลด locker_kb.md"""
 
     if not KB_PATH.exists():
         raise FileNotFoundError(
             f"ไม่พบไฟล์ {KB_PATH}"
         )
 
-    document = KB_PATH.read_text(
-        encoding="utf-8",
+    text = KB_PATH.read_text(
+        encoding="utf-8"
     ).strip()
 
-    if not document:
+    if not text:
         raise ValueError(
-            "ไฟล์ menu_kb.md ไม่มีข้อมูล"
+            "locker_kb.md ไม่มีข้อมูล"
         )
 
-    chunks = split_markdown(document)
+    return text
 
-    if not chunks:
-        raise ValueError(
-            "ไม่สามารถแบ่ง knowledge base เป็น chunk ได้"
-        )
 
-    model = SentenceTransformer(
+# =========================================================
+# SPLIT MARKDOWN
+# =========================================================
+
+def split_markdown(
+    text: str,
+) -> list[str]:
+    """แบ่ง Markdown ตามหัวข้อ ##"""
+
+    chunks: list[str] = []
+    current_lines: list[str] = []
+
+    for line in text.splitlines():
+
+        stripped = line.strip()
+
+        if (
+            stripped.startswith("## ")
+            and current_lines
+        ):
+            chunk = "\n".join(
+                current_lines
+            ).strip()
+
+            if chunk:
+                chunks.append(chunk)
+
+            current_lines = [line]
+
+        else:
+            current_lines.append(line)
+
+    if current_lines:
+
+        chunk = "\n".join(
+            current_lines
+        ).strip()
+
+        if chunk:
+            chunks.append(chunk)
+
+    return chunks
+
+
+# =========================================================
+# EMBEDDING MODEL
+# =========================================================
+
+@st.cache_resource
+def load_embedding_model():
+    """โหลด Sentence Transformer"""
+
+    return SentenceTransformer(
         EMBEDDING_MODEL
     )
+
+
+# =========================================================
+# FAISS
+# =========================================================
+
+@st.cache_resource
+def build_index(
+    chunks_tuple: tuple[str, ...],
+):
+    """สร้าง FAISS index"""
+
+    chunks = list(
+        chunks_tuple
+    )
+
+    model = load_embedding_model()
 
     embeddings = model.encode(
         chunks,
@@ -153,547 +161,464 @@ def load_index(
 
     dimension = embeddings.shape[1]
 
-    # Inner Product + normalized vectors
-    # ใช้เป็น cosine similarity
     index = faiss.IndexFlatIP(
         dimension
     )
 
-    index.add(embeddings)
+    index.add(
+        embeddings
+    )
 
-    return model, index, chunks
-
-
-# =========================================================
-# Trace / Observability
-# =========================================================
-
-def append_trace(
-    span: dict[str, Any],
-) -> None:
-    """เพิ่ม span หนึ่งบรรทัดลง traces.jsonl."""
-
-    with TRACE_PATH.open(
-        "a",
-        encoding="utf-8",
-    ) as file:
-        file.write(
-            json.dumps(
-                span,
-                ensure_ascii=False,
-                default=str,
-            )
-            + "\n"
-        )
-
-
-def create_span(
-    *,
-    trace_id: str,
-    span_name: str,
-    started_at: float,
-    status: str,
-    input_data: Any,
-    output_data: Any,
-    error: str | None = None,
-) -> dict[str, Any]:
-    """สร้าง span สำหรับบันทึก observability."""
-
-    ended_at = time.time()
-
-    return {
-        "trace_id": trace_id,
-        "span_id": str(uuid.uuid4()),
-        "span_name": span_name,
-        "started_at": started_at,
-        "ended_at": ended_at,
-        "duration_ms": round(
-            (ended_at - started_at) * 1000,
-            2,
-        ),
-        "status": status,
-        "input": input_data,
-        "output": output_data,
-        "error": error,
-    }
+    return index
 
 
 # =========================================================
-# TODO 4
-# Retrieve top-k chunks
+# RAG RETRIEVE
 # =========================================================
 
-def retrieve_top_k(
+def retrieve(
     query: str,
-    model: SentenceTransformer,
-    index: faiss.IndexFlatIP,
     chunks: list[str],
-    *,
-    trace_id: str,
-    k: int = TOP_K,
-) -> tuple[
-    list[dict[str, Any]],
-    dict[str, Any],
-]:
-    """Encode คำถามและค้นหา top-k chunks."""
+    index,
+    top_k: int = TOP_K,
+) -> list[dict[str, Any]]:
+    """ค้นหา Knowledge Base"""
 
-    started_at = time.time()
+    model = load_embedding_model()
 
-    try:
-        query_embedding = model.encode(
-            [query],
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False,
+    query_embedding = model.encode(
+        [query],
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+        show_progress_bar=False,
+    )
+
+    query_embedding = np.asarray(
+        query_embedding,
+        dtype=np.float32,
+    )
+
+    actual_k = min(
+        top_k,
+        len(chunks),
+    )
+
+    scores, indices = index.search(
+        query_embedding,
+        actual_k,
+    )
+
+    results: list[dict[str, Any]] = []
+
+    for score, idx in zip(
+        scores[0],
+        indices[0],
+    ):
+
+        if idx < 0:
+            continue
+
+        results.append(
+            {
+                "chunk_id": int(idx),
+                "score": float(score),
+                "text": chunks[idx],
+            }
         )
 
-        query_embedding = np.asarray(
-            query_embedding,
-            dtype=np.float32,
-        )
-
-        actual_k = min(
-            k,
-            len(chunks),
-        )
-
-        scores, indices = index.search(
-            query_embedding,
-            actual_k,
-        )
-
-        results: list[dict[str, Any]] = []
-
-        for rank, (
-            chunk_index,
-            score,
-        ) in enumerate(
-            zip(
-                indices[0],
-                scores[0],
-            ),
-            start=1,
-        ):
-            if chunk_index < 0:
-                continue
-
-            results.append(
-                {
-                    "rank": rank,
-                    "chunk_id": (
-                        f"chunk_{int(chunk_index):03d}"
-                    ),
-                    "chunk_index": int(
-                        chunk_index
-                    ),
-                    "score": float(score),
-                    "text": chunks[
-                        int(chunk_index)
-                    ],
-                }
-            )
-
-        span = create_span(
-            trace_id=trace_id,
-            span_name="retrieve_top_k",
-            started_at=started_at,
-            status="success",
-            input_data={
-                "query": query,
-                "k": k,
-            },
-            output_data={
-                "results": [
-                    {
-                        "rank": item["rank"],
-                        "chunk_id": item[
-                            "chunk_id"
-                        ],
-                        "score": item["score"],
-                    }
-                    for item in results
-                ]
-            },
-        )
-
-        append_trace(span)
-
-        return results, span
-
-    except Exception as exc:
-        span = create_span(
-            trace_id=trace_id,
-            span_name="retrieve_top_k",
-            started_at=started_at,
-            status="error",
-            input_data={
-                "query": query,
-                "k": k,
-            },
-            output_data=None,
-            error=str(exc),
-        )
-
-        append_trace(span)
-        raise
+    return results
 
 
 # =========================================================
-# สร้าง Prompt สำหรับ Gemini
+# RAG ANSWER
 # =========================================================
 
-def build_prompt(
-    query: str,
-    context_chunks: list[
-        dict[str, Any]
-    ],
+def generate_rag_answer(
+    question: str,
+    retrieved: list[dict[str, Any]],
 ) -> str:
-    """สร้าง prompt โดยบังคับให้ตอบจาก context เท่านั้น."""
+    """ให้ Gemini ตอบจาก Knowledge Base"""
 
-    context_parts: list[str] = []
+    api_key = os.getenv(
+        "GOOGLE_API_KEY"
+    )
 
-    for item in context_chunks:
-        context_parts.append(
-            (
-                f"[{item['chunk_id']}]\n"
-                f"{item['text']}"
-            )
+    if not api_key:
+        raise RuntimeError(
+            "ไม่พบ GOOGLE_API_KEY"
         )
+
+    from google import genai
+
+    client = genai.Client(
+        api_key=api_key
+    )
 
     context = "\n\n".join(
-        context_parts
+        [
+            (
+                f"[ข้อมูล {item['chunk_id']}]\n"
+                f"{item['text']}"
+            )
+            for item in retrieved
+        ]
     )
 
-    return f"""
-คุณเป็นผู้ช่วยตอบคำถามของร้าน MilkLab°
+    prompt = f"""
+คุณคือ AI Assistant ของ DropExpress
+
+DropExpress เป็นบริการตู้ล็อคเกอร์ฝากของ
+และฝากส่งพัสดุอัตโนมัติ 24 ชั่วโมง
 
 กฎสำคัญ:
-1. ตอบโดยใช้เฉพาะข้อมูลใน CONTEXT เท่านั้น
-2. ห้ามเดาหรือสร้างข้อมูลใหม่
-3. ห้ามแต่งราคา ส่วนผสม เวลา ที่ตั้ง หรือเงื่อนไขเพิ่มเติม
-4. ถ้าไม่มีคำตอบอยู่ใน CONTEXT ให้ตอบว่า:
-   "ไม่พบข้อมูลนี้ในฐานความรู้ของร้าน กรุณาสอบถามพนักงาน"
-5. ตอบเป็นภาษาไทย กระชับ และเข้าใจง่าย
-6. ท้ายคำตอบให้ระบุ chunk_id ที่ใช้อ้างอิง
 
-CONTEXT:
+1. ตอบจาก Knowledge Base เท่านั้น
+2. ห้ามเดาราคา
+3. ห้ามสร้างบริการใหม่
+4. ห้ามสร้างเงื่อนไขใหม่
+5. ถ้าไม่มีข้อมูล ให้ตอบว่า
+"ขออภัย ข้อมูลส่วนนี้ยังไม่มีในระบบค่ะ 🙏"
+6. ตอบภาษาไทย
+7. ตอบกระชับและเข้าใจง่าย
+8. ห้ามใช้ em dash
+
+Knowledge Base:
+
 {context}
 
-คำถามของลูกค้า:
-{query}
+คำถาม:
 
-คำตอบ:
-""".strip()
+{question}
+"""
 
-
-# =========================================================
-# TODO 5 + TODO 6
-# Generate answer พร้อม span
-# =========================================================
-
-def generate_answer(
-    query: str,
-    context_chunks: list[
-        dict[str, Any]
-    ],
-    *,
-    trace_id: str,
-) -> tuple[
-    str,
-    dict[str, Any],
-]:
-    """ส่ง query และ context ให้ Gemini."""
-
-    started_at = time.time()
-
-    try:
-        api_key = os.getenv(
-            "GEMINI_API_KEY"
-        )
-
-        if not api_key:
-            raise RuntimeError(
-                "ไม่พบ GEMINI_API_KEY "
-                "กรุณาตั้งค่าใน Codespaces Secret "
-                "หรือไฟล์ .env"
-            )
-
-        prompt = build_prompt(
-            query,
-            context_chunks,
-        )
-
-        client = genai.Client(
-            api_key=api_key
-        )
-
-        response = None
-        last_error = None
-
-        for attempt in range(3):
-            try:
-                response = client.models.generate_content(
-                    model=GEMINI_MODEL,
-                    contents=prompt,
-                )
-                break
-            except Exception as exc:
-                last_error = exc
-                error_text = str(exc)
-
-                # Retry เฉพาะ error ชั่วคราว 429 หรือ 503
-                if (
-                    "429" not in error_text
-                    and "503" not in error_text
-                    and "UNAVAILABLE" not in error_text
-                    and "RESOURCE_EXHAUSTED" not in error_text
-                ):
-                    raise
-
-                if attempt < 2:
-                    time.sleep(2 ** attempt)
-
-        if response is None:
-            raise RuntimeError(
-                "Gemini กำลังมีผู้ใช้งานจำนวนมาก "
-                "กรุณารอสักครู่แล้วลองใหม่อีกครั้ง"
-            ) from last_error
-
-        answer = (
-            response.text or ""
-        ).strip()
-
-        if not answer:
-            answer = (
-                "ระบบไม่สามารถสร้างคำตอบได้ "
-                "กรุณาลองใหม่อีกครั้ง"
-            )
-
-        span = create_span(
-            trace_id=trace_id,
-            span_name="generate_answer",
-            started_at=started_at,
-            status="success",
-            input_data={
-                "query": query,
-                "context_chunk_ids": [
-                    item["chunk_id"]
-                    for item in context_chunks
-                ],
-                "model": GEMINI_MODEL,
-            },
-            output_data={
-                "answer": answer,
-            },
-        )
-
-        append_trace(span)
-
-        return answer, span
-
-    except Exception as exc:
-        span = create_span(
-            trace_id=trace_id,
-            span_name="generate_answer",
-            started_at=started_at,
-            status="error",
-            input_data={
-                "query": query,
-                "context_chunk_ids": [
-                    item["chunk_id"]
-                    for item in context_chunks
-                ],
-                "model": GEMINI_MODEL,
-            },
-            output_data=None,
-            error=str(exc),
-        )
-
-        append_trace(span)
-        raise
-
-
-# =========================================================
-# Streamlit Chat UI
-# =========================================================
-
-def main() -> None:
-    st.set_page_config(
-        page_title="MilkLab° RAG",
-        page_icon="🥛",
-        layout="centered",
+    response = client.models.generate_content(
+        model=os.getenv(
+            "GEMINI_MODEL",
+            "gemini-2.5-flash",
+        ),
+        contents=prompt,
     )
 
-    st.title(
-        "🥛 MilkLab° RAG Chatbot"
+    return (
+        response.text or ""
+    ).strip()
+
+
+# =========================================================
+# DETECT AGENT COMMAND
+# =========================================================
+
+def is_transaction_command(
+    question: str,
+) -> bool:
+    """
+    ตรวจว่าคำถามน่าจะเป็นคำสั่ง Agent หรือไม่
+    """
+
+    keywords = [
+        "บันทึกฝากตู้",
+        "ฝากตู้",
+        "ฝากของ",
+        "บันทึกการฝาก",
+        "ส่งพัสดุ",
+        "บันทึกส่งพัสดุ",
+        "บันทึกพัสดุ",
+        "วันนี้มีธุรกรรม",
+        "วันนี้มียอด",
+        "สรุปธุรกรรม",
+        "สรุปยอด",
+        "ยอดวันนี้",
+        "แจ้งเตือน",
+        "ส่งแจ้งเตือน",
+    ]
+
+    text = question.lower()
+
+    return any(
+        keyword in text
+        for keyword in keywords
+    )
+
+
+# =========================================================
+# AGENT
+# =========================================================
+
+def run_agent(
+    question: str,
+) -> str:
+    """ส่งคำสั่งเข้า Agent"""
+
+    tool_call = parse_command(
+        question
+    )
+
+    tool_name = tool_call.get(
+        "tool"
+    )
+
+    args = tool_call.get(
+        "args",
+        {},
+    )
+
+    allowed_tools = {
+        "log_locker",
+        "log_parcel",
+        "query_transactions",
+        "send_alert",
+    }
+
+    if tool_name not in allowed_tools:
+        raise ValueError(
+            f"Agent เลือก Tool ไม่ถูกต้อง: {tool_name}"
+        )
+
+    result = dispatch_tool(
+        tool_call
+    )
+
+    return result
+
+
+# =========================================================
+# STREAMLIT CONFIG
+# =========================================================
+
+st.set_page_config(
+    page_title="DropExpress AI",
+    page_icon="📦",
+    layout="centered",
+)
+
+
+# =========================================================
+# HEADER
+# =========================================================
+
+st.title(
+    "📦 DropExpress AI"
+)
+
+st.caption(
+    "Smart Locker & Logistics Assistant"
+)
+
+st.write(
+    "ถามข้อมูล ใช้งานตู้ ฝากพัสดุ "
+    "หรือดูธุรกรรมได้จากหน้านี้"
+)
+
+
+# =========================================================
+# API CHECK
+# =========================================================
+
+if not os.getenv(
+    "GOOGLE_API_KEY"
+):
+
+    st.error(
+        "ไม่พบ GOOGLE_API_KEY"
+    )
+
+    st.info(
+        "กรุณาตั้งค่า GOOGLE_API_KEY "
+        "ใน Codespaces Secret"
+    )
+
+    st.stop()
+
+
+# =========================================================
+# LOAD RAG
+# =========================================================
+
+try:
+
+    kb_text = load_knowledge_base()
+
+    chunks = split_markdown(
+        kb_text
+    )
+
+    if not chunks:
+
+        st.error(
+            "Knowledge Base ไม่มีข้อมูล"
+        )
+
+        st.stop()
+
+    index = build_index(
+        tuple(chunks)
+    )
+
+except Exception as exc:
+
+    st.error(
+        f"ไม่สามารถโหลด RAG ได้: {exc}"
+    )
+
+    st.stop()
+
+
+# =========================================================
+# SIDEBAR
+# =========================================================
+
+with st.sidebar:
+
+    st.header(
+        "📦 DropExpress"
+    )
+
+    st.write(
+        "Smart Locker & Logistics"
+    )
+
+    st.divider()
+
+    st.write(
+        f"Knowledge chunks: {len(chunks)}"
+    )
+
+    st.write(
+        f"Embedding: {EMBEDDING_MODEL}"
+    )
+
+    st.write(
+        f"Top-K: {TOP_K}"
+    )
+
+    st.divider()
+
+    st.info(
+        "RAG + AI Agent"
     )
 
     st.caption(
-        "ถามเกี่ยวกับเมนู ราคา ส่วนผสม "
-        "สารก่อภูมิแพ้ เวลาเปิดร้าน "
-        "การจัดส่ง และ FAQ"
+        "FAISS + Gemini + Google Sheets + Telegram"
     )
 
-    with st.sidebar:
-        st.header(
-            "สถานะระบบ"
-        )
-
-        st.write(
-            f"Embedding: `{EMBEDDING_MODEL}`"
-        )
-
-        st.write(
-            f"Gemini: `{GEMINI_MODEL}`"
-        )
-
-        st.write(
-            f"Top-k: `{TOP_K}`"
-        )
-
-        if st.button(
-            "ล้างประวัติแชต"
-        ):
-            st.session_state.messages = []
-            st.rerun()
-
-    try:
-        kb_mtime = (
-            KB_PATH.stat().st_mtime
-        )
-
-        model, index, chunks = (
-            load_index(kb_mtime)
-        )
-
-        st.success(
-            f"โหลดฐานความรู้สำเร็จ "
-            f"{len(chunks)} chunks"
-        )
-
-    except Exception as exc:
-        st.error(
-            f"โหลดฐานความรู้ไม่สำเร็จ: "
-            f"{exc}"
-        )
-        st.stop()
-
-    if "messages" not in (
-        st.session_state
+    if st.button(
+        "🗑️ ล้างประวัติแชต"
     ):
-        st.session_state.messages = [
-            {
-                "role": "assistant",
-                "content": (
-                    "สวัสดีครับ ถามข้อมูลเกี่ยวกับ "
-                    "MilkLab° ได้เลย เช่น "
-                    "นมหมีฮอกไกโดราคาเท่าไร"
-                ),
-            }
-        ]
 
-    for message in (
-        st.session_state.messages
+        st.session_state.messages = []
+
+        st.rerun()
+
+
+# =========================================================
+# CHAT HISTORY
+# =========================================================
+
+if "messages" not in st.session_state:
+
+    st.session_state.messages = []
+
+
+for message in (
+    st.session_state.messages
+):
+
+    with st.chat_message(
+        message["role"]
     ):
-        with st.chat_message(
-            message["role"]
-        ):
-            st.write(
-                message["content"]
-            )
 
-    prompt = st.chat_input(
-        "ตัวอย่าง: ร้านเปิดกี่โมง?"
-    )
+        st.markdown(
+            message["content"]
+        )
 
-    if not prompt:
-        return
+
+# =========================================================
+# CHAT INPUT
+# =========================================================
+
+question = st.chat_input(
+    "ถามหรือสั่งงาน DropExpress ได้เลย..."
+)
+
+
+# =========================================================
+# PROCESS MESSAGE
+# =========================================================
+
+if question:
 
     st.session_state.messages.append(
         {
             "role": "user",
-            "content": prompt,
+            "content": question,
         }
     )
 
     with st.chat_message(
         "user"
     ):
-        st.write(prompt)
 
-    # หนึ่งคำถามใช้ trace_id เดียวกัน
-    # ทั้ง retrieve และ generate
-    trace_id = str(
-        uuid.uuid4()
-    )
+        st.markdown(
+            question
+        )
 
     with st.chat_message(
         "assistant"
     ):
+
         try:
-            with st.spinner(
-                "กำลังค้นข้อมูล..."
-            ):
-                (
-                    context,
-                    retrieve_span,
-                ) = retrieve_top_k(
-                    prompt,
-                    model,
-                    index,
-                    chunks,
-                    trace_id=trace_id,
-                    k=TOP_K,
-                )
 
-            with st.spinner(
-                "กำลังสร้างคำตอบ..."
-            ):
-                (
-                    answer,
-                    generation_span,
-                ) = generate_answer(
-                    prompt,
-                    context,
-                    trace_id=trace_id,
-                )
+            # =================================================
+            # AGENT
+            # =================================================
 
-            st.write(answer)
-
-            with st.expander(
-                "Source chunks"
+            if is_transaction_command(
+                question
             ):
-                for item in context:
-                    st.markdown(
-                        (
-                            f"### อันดับ "
-                            f"{item['rank']}\n"
-                            f"- Chunk: "
-                            f"`{item['chunk_id']}`\n"
-                            f"- Similarity: "
-                            f"`{item['score']:.4f}`"
-                        )
+
+                with st.spinner(
+                    "กำลังดำเนินการ..."
+                ):
+
+                    result = run_agent(
+                        question
                     )
 
-                    st.write(
-                        item["text"]
+                st.success(
+                    result
+                )
+
+                answer = result
+
+            # =================================================
+            # RAG
+            # =================================================
+
+            else:
+
+                with st.spinner(
+                    "กำลังค้นหาข้อมูล..."
+                ):
+
+                    retrieved = retrieve(
+                        question,
+                        chunks,
+                        index,
+                        TOP_K,
                     )
 
-                    st.divider()
+                    answer = generate_rag_answer(
+                        question,
+                        retrieved,
+                    )
 
-            # ข้อ 6 Observability
-            with st.expander(
-                "Trace"
-            ):
-                st.json(
-                    {
-                        "trace_id": trace_id,
-                        "spans": [
-                            retrieve_span,
-                            generation_span,
-                        ],
-                    }
+                st.markdown(
+                    answer
                 )
+
+            # =================================================
+            # SAVE CHAT
+            # =================================================
 
             st.session_state.messages.append(
                 {
@@ -703,11 +628,14 @@ def main() -> None:
             )
 
         except Exception as exc:
+
             error_message = (
-                f"ระบบเกิดข้อผิดพลาด: {exc}"
+                f"เกิดข้อผิดพลาด: {exc}"
             )
 
-            st.error(error_message)
+            st.error(
+                error_message
+            )
 
             st.session_state.messages.append(
                 {
@@ -715,7 +643,3 @@ def main() -> None:
                     "content": error_message,
                 }
             )
-
-
-if __name__ == "__main__":
-    main()
