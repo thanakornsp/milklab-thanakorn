@@ -36,7 +36,7 @@ from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
-KB_PATH = Path("menu_kb.md")
+KB_PATH = Path("locker_kb.md")
 TRACE_PATH = Path("traces.jsonl")
 
 EMBEDDING_MODEL = (
