@@ -4,16 +4,6 @@ DropExpress Agent Harness
 รับคำสั่งภาษาไทยจากผู้ใช้
 ส่งให้ Gemini วิเคราะห์ว่าเหมาะกับ Tool ไหน
 จากนั้นเรียก Tool จริง
-
-ตัวอย่าง:
-
-python agent_harness.py --cmd "บันทึกฝากตู้ Size M ราคา 35 บาท"
-
-python agent_harness.py --cmd "ส่งพัสดุ Flash Express Tracking TH123456789 ราคา 65 บาท"
-
-python agent_harness.py --cmd "วันนี้มีธุรกรรมกี่รายการ"
-
-python agent_harness.py --cmd "ส่งแจ้งเตือนว่าระบบตู้ Size M เต็ม"
 """
 
 import argparse
@@ -39,9 +29,7 @@ from sales_logger import (
 TOOL_SCHEMA = [
     {
         "name": "log_locker",
-        "description": (
-            "บันทึกธุรกรรมการฝากของเข้าตู้ DropExpress"
-        ),
+        "description": "บันทึกธุรกรรมการฝากของเข้าตู้ DropExpress",
         "parameters": {
             "type": "object",
             "properties": {
@@ -51,31 +39,25 @@ TOOL_SCHEMA = [
                 },
                 "phone": {
                     "type": "string",
-                    "description": "เบอร์โทรศัพท์ลูกค้า",
+                    "description": "เบอร์โทรศัพท์ลูกค้า ถ้าไม่มีให้เป็นค่าว่าง",
                 },
                 "amount": {
                     "type": "number",
                     "description": "จำนวนเงิน",
                 },
             },
-            "required": [
-                "locker_size",
-                "amount",
-            ],
+            "required": ["locker_size", "amount"],
         },
     },
     {
         "name": "log_parcel",
-        "description": (
-            "บันทึกธุรกรรมการส่งพัสดุ "
-            "ผ่านบริษัทขนส่ง"
-        ),
+        "description": "บันทึกธุรกรรมการส่งพัสดุผ่านบริษัทขนส่ง",
         "parameters": {
             "type": "object",
             "properties": {
                 "locker_size": {
                     "type": "string",
-                    "description": "ขนาดตู้ S, M หรือ L",
+                    "description": "ขนาดตู้ S, M หรือ L ถ้าไม่มีให้เป็นค่าว่าง",
                 },
                 "carrier": {
                     "type": "string",
@@ -87,7 +69,7 @@ TOOL_SCHEMA = [
                 },
                 "phone": {
                     "type": "string",
-                    "description": "เบอร์โทรศัพท์ลูกค้า",
+                    "description": "เบอร์โทรศัพท์ลูกค้า ถ้าไม่มีให้เป็นค่าว่าง",
                 },
                 "amount": {
                     "type": "number",
@@ -103,18 +85,13 @@ TOOL_SCHEMA = [
     },
     {
         "name": "query_transactions",
-        "description": (
-            "สรุปจำนวนและยอดเงินของธุรกรรม "
-            "DropExpress ตามวันที่"
-        ),
+        "description": "สรุปจำนวนและยอดเงินของธุรกรรม DropExpress ตามวันที่",
         "parameters": {
             "type": "object",
             "properties": {
                 "date": {
                     "type": "string",
-                    "description": (
-                        "วันที่รูปแบบ YYYY-MM-DD"
-                    ),
+                    "description": "วันที่รูปแบบ YYYY-MM-DD",
                 },
             },
             "required": ["date"],
@@ -122,9 +99,7 @@ TOOL_SCHEMA = [
     },
     {
         "name": "send_alert",
-        "description": (
-            "ส่งข้อความแจ้งเตือนผ่าน Telegram"
-        ),
+        "description": "ส่งข้อความแจ้งเตือนผ่าน Telegram",
         "parameters": {
             "type": "object",
             "properties": {
@@ -139,16 +114,19 @@ TOOL_SCHEMA = [
 ]
 
 
+ALLOWED_TOOLS = {
+    "log_locker",
+    "log_parcel",
+    "query_transactions",
+    "send_alert",
+}
+
+
 # =========================================================
-# TRACE LOG
+# TRACE
 # =========================================================
 
-def write_trace(
-    event: str,
-    data,
-) -> None:
-    """บันทึก Agent trace"""
-
+def write_trace(event: str, data) -> None:
     timestamp = datetime.now().strftime(
         "%Y-%m-%d %H:%M:%S"
     )
@@ -158,7 +136,6 @@ def write_trace(
         "a",
         encoding="utf-8",
     ) as log_file:
-
         log_file.write(
             f"[{timestamp}] {event}: "
             f"{json.dumps(data, ensure_ascii=False, default=str)}\n"
@@ -174,14 +151,16 @@ def parse_command(
     api_key: str | None = None,
 ) -> dict:
     """
-    ส่งคำสั่งให้ Gemini
-    และขอผลลัพธ์ในรูปแบบ:
+    วิเคราะห์คำสั่งภาษาไทยด้วย Gemini
 
+    คืนค่า:
     {
-        "tool": "tool_name",
-        "args": {}
+        "tool": "...",
+        "args": {...}
     }
     """
+
+    load_dotenv()
 
     if api_key is None:
         api_key = os.getenv(
@@ -197,13 +176,20 @@ def parse_command(
         api_key=api_key
     )
 
-    prompt = f"""
-คุณคือ AI Agent ของ DropExpress
+    today = datetime.now().strftime(
+        "%Y-%m-%d"
+    )
 
-หน้าที่คือวิเคราะห์คำสั่งภาษาไทย
+    prompt = f"""
+คุณคือ AI Agent ของระบบ DropExpress
+
+วันนี้คือ {today}
+
+หน้าที่ของคุณ:
+วิเคราะห์คำสั่งภาษาไทยของผู้ใช้
 แล้วเลือก Tool ที่เหมาะสมที่สุด
 
-Tools ที่ใช้ได้:
+Tools ที่อนุญาต:
 
 {json.dumps(
     TOOL_SCHEMA,
@@ -211,28 +197,81 @@ Tools ที่ใช้ได้:
     indent=2,
 )}
 
-กฎ:
+กฎสำคัญ:
 
-1. ตอบ JSON เท่านั้น
-2. ห้ามใส่ markdown
-3. ห้ามใส่คำอธิบายเพิ่มเติม
-4. ต้องใช้ชื่อ Tool ที่มีอยู่เท่านั้น
-5. ถ้าผู้ใช้ต้องการฝากของ ให้ใช้ log_locker
-6. ถ้าผู้ใช้ต้องการส่งพัสดุ ให้ใช้ log_parcel
-7. ถ้าผู้ใช้ถามยอดหรือจำนวนธุรกรรม ให้ใช้ query_transactions
-8. ถ้าผู้ใช้ต้องการแจ้งเตือน ให้ใช้ send_alert
-9. วันที่ต้องอยู่ในรูปแบบ YYYY-MM-DD
+1. ต้องตอบเป็น JSON object เท่านั้น
+2. ห้ามใช้ Markdown
+3. ห้ามใส่คำอธิบาย
+4. JSON ต้องมี key ชื่อ "tool"
+5. JSON ต้องมี key ชื่อ "args"
+6. ค่า "tool" ต้องเป็นหนึ่งใน:
+   - log_locker
+   - log_parcel
+   - query_transactions
+   - send_alert
+7. ถ้าผู้ใช้ต้องการฝากของ ให้ใช้ log_locker
+8. ถ้าผู้ใช้ต้องการส่งพัสดุ ให้ใช้ log_parcel
+9. ถ้าผู้ใช้ถามจำนวนหรือยอดธุรกรรม ให้ใช้ query_transactions
+10. ถ้าผู้ใช้ต้องการส่งแจ้งเตือน ให้ใช้ send_alert
+11. วันที่ต้องเป็น YYYY-MM-DD
+12. ถ้าไม่มี phone ให้ใช้ ""
+13. ถ้าไม่มี locker_size สำหรับส่งพัสดุ ให้ใช้ ""
+14. ห้ามสร้าง Tool ใหม่
+15. ห้ามตอบ null
+16. ห้ามตอบ None
 
-คำสั่งผู้ใช้:
+ตัวอย่าง:
+
+ผู้ใช้:
+บันทึกฝากตู้ Size M ราคา 35 บาท
+
+ตอบ:
+{{
+  "tool": "log_locker",
+  "args": {{
+    "locker_size": "M",
+    "amount": 35
+  }}
+}}
+
+ผู้ใช้:
+ส่งพัสดุ Flash Express Tracking TH123456789 ราคา 65 บาท
+
+ตอบ:
+{{
+  "tool": "log_parcel",
+  "args": {{
+    "carrier": "Flash Express",
+    "tracking_number": "TH123456789",
+    "amount": 65
+  }}
+}}
+
+ผู้ใช้:
+วันนี้มีธุรกรรมกี่รายการ
+
+ตอบ:
+{{
+  "tool": "query_transactions",
+  "args": {{
+    "date": "{today}"
+  }}
+}}
+
+ผู้ใช้:
+ส่งแจ้งเตือนว่าระบบทำงานปกติ
+
+ตอบ:
+{{
+  "tool": "send_alert",
+  "args": {{
+    "message": "ระบบทำงานปกติ"
+  }}
+}}
+
+คำสั่งของผู้ใช้:
 
 {cmd}
-
-ตอบในรูปแบบ:
-
-{{
-    "tool": "ชื่อ tool",
-    "args": {{}}
-}}
 """
 
     response = client.models.generate_content(
@@ -241,39 +280,74 @@ Tools ที่ใช้ได้:
     )
 
     text = (
-        response.text
-        or ""
+        response.text or ""
     ).strip()
 
-    text = (
-        text
-        .replace("```json", "")
-        .replace("```", "")
-        .strip()
-    )
+    if not text:
+        raise RuntimeError(
+            "Gemini ไม่ส่งข้อความกลับมา"
+        )
+
+    # ลบ Markdown fence ถ้ามี
+    if text.startswith("```"):
+        text = text.replace(
+            "```json",
+            "",
+        )
+        text = text.replace(
+            "```",
+            "",
+        )
+        text = text.strip()
 
     try:
-
         tool_call = json.loads(
             text
         )
-
     except json.JSONDecodeError as exc:
-
         raise RuntimeError(
             "Gemini ส่ง JSON ไม่ถูกต้อง: "
             f"{text}"
         ) from exc
 
-    if (
-        "tool" not in tool_call
-        or "args" not in tool_call
+    if not isinstance(
+        tool_call,
+        dict,
     ):
         raise RuntimeError(
-            "Response ขาด key tool หรือ args"
+            "Gemini response ไม่ใช่ JSON object"
         )
 
-    return tool_call
+    tool_name = tool_call.get(
+        "tool"
+    )
+
+    args = tool_call.get(
+        "args"
+    )
+
+    if not tool_name:
+        raise RuntimeError(
+            "Gemini ไม่ได้ระบุ tool"
+        )
+
+    if not isinstance(
+        args,
+        dict,
+    ):
+        raise RuntimeError(
+            "Gemini ไม่ได้ระบุ args เป็น object"
+        )
+
+    if tool_name not in ALLOWED_TOOLS:
+        raise RuntimeError(
+            f"Gemini เลือก Tool ไม่ถูกต้อง: {tool_name}"
+        )
+
+    return {
+        "tool": tool_name,
+        "args": args,
+    }
 
 
 # =========================================================
@@ -283,7 +357,6 @@ Tools ที่ใช้ได้:
 def dispatch_tool(
     tool_call: dict,
 ) -> str:
-    """เรียก Tool จริงตามผลจาก Gemini"""
 
     tool_name = tool_call.get(
         "tool"
@@ -294,39 +367,40 @@ def dispatch_tool(
         {},
     )
 
-    # -----------------------------------------------------
-    # LOG LOCKER
-    # -----------------------------------------------------
-
     if tool_name == "log_locker":
+
+        locker_size = str(
+            args.get(
+                "locker_size",
+                "",
+            )
+        ).upper()
+
+        amount = float(
+            args.get(
+                "amount",
+                0,
+            )
+        )
 
         row = append_transaction(
             service="ฝากตู้",
-            locker_size=args.get(
-                "locker_size",
-                "",
-            ),
+            locker_size=locker_size,
             phone=args.get(
                 "phone",
                 "",
             ),
-            amount=args.get(
-                "amount",
-                0,
-            ),
+            amount=amount,
         )
 
         try:
-
             provider = send_notification(
                 (
                     "📦 DropExpress\n"
                     "บันทึกฝากตู้สำเร็จ\n\n"
                     f"ตู้: {row['locker_size']}\n"
-                    f"เบอร์: "
-                    f"{row['phone'] or '-'}\n"
-                    f"ราคา: "
-                    f"{row['amount']:.2f} บาท"
+                    f"เบอร์: {row['phone'] or '-'}\n"
+                    f"ราคา: {row['amount']:.2f} บาท"
                 )
             )
 
@@ -343,13 +417,8 @@ def dispatch_tool(
                 "บันทึกการฝากตู้สำเร็จ "
                 f"Size {row['locker_size']} "
                 f"ราคา {row['amount']:.2f} บาท "
-                "แต่ส่งแจ้งเตือนไม่สำเร็จ: "
-                f"{exc}"
+                f"แต่ส่งแจ้งเตือนไม่สำเร็จ: {exc}"
             )
-
-    # -----------------------------------------------------
-    # LOG PARCEL
-    # -----------------------------------------------------
 
     if tool_name == "log_parcel":
 
@@ -371,34 +440,30 @@ def dispatch_tool(
                 "phone",
                 "",
             ),
-            amount=args.get(
-                "amount",
-                0,
+            amount=float(
+                args.get(
+                    "amount",
+                    0,
+                )
             ),
         )
 
         try:
-
             provider = send_notification(
                 (
                     "📦 DropExpress\n"
                     "บันทึกส่งพัสดุสำเร็จ\n\n"
-                    f"ขนส่ง: "
-                    f"{row['carrier']}\n"
-                    f"Tracking: "
-                    f"{row['tracking_number']}\n"
-                    f"ตู้: "
-                    f"{row['locker_size'] or '-'}\n"
-                    f"ราคา: "
-                    f"{row['amount']:.2f} บาท"
+                    f"ขนส่ง: {row['carrier']}\n"
+                    f"Tracking: {row['tracking_number']}\n"
+                    f"ตู้: {row['locker_size'] or '-'}\n"
+                    f"ราคา: {row['amount']:.2f} บาท"
                 )
             )
 
             return (
                 "บันทึกการส่งพัสดุสำเร็จ "
                 f"{row['carrier']} "
-                f"Tracking "
-                f"{row['tracking_number']} "
+                f"Tracking {row['tracking_number']} "
                 f"ราคา {row['amount']:.2f} บาท "
                 f"และแจ้งเตือนผ่าน {provider}"
             )
@@ -408,47 +473,51 @@ def dispatch_tool(
             return (
                 "บันทึกการส่งพัสดุสำเร็จ "
                 f"{row['carrier']} "
-                f"Tracking "
-                f"{row['tracking_number']} "
+                f"Tracking {row['tracking_number']} "
                 f"ราคา {row['amount']:.2f} บาท "
-                "แต่ส่งแจ้งเตือนไม่สำเร็จ: "
-                f"{exc}"
+                f"แต่ส่งแจ้งเตือนไม่สำเร็จ: {exc}"
             )
-
-    # -----------------------------------------------------
-    # QUERY TRANSACTIONS
-    # -----------------------------------------------------
 
     if tool_name == "query_transactions":
 
+        date = args.get(
+            "date"
+        )
+
+        if not date:
+            raise ValueError(
+                "ไม่พบวันที่สำหรับ query_transactions"
+            )
+
         result = query_transactions(
-            args["date"]
+            date
         )
 
         return (
             f"วันที่ {result['date']}\n"
-            f"ธุรกรรมทั้งหมด: "
-            f"{result['count']} รายการ\n"
-            f"ฝากตู้: "
-            f"{result['locker_count']} รายการ\n"
-            f"ส่งพัสดุ: "
-            f"{result['parcel_count']} รายการ\n"
-            f"ยอดรวม: "
-            f"{result['total_amount']:.2f} บาท"
+            f"ธุรกรรมทั้งหมด: {result['count']} รายการ\n"
+            f"ฝากตู้: {result['locker_count']} รายการ\n"
+            f"ส่งพัสดุ: {result['parcel_count']} รายการ\n"
+            f"ยอดรวม: {result['total_amount']:.2f} บาท"
         )
-
-    # -----------------------------------------------------
-    # SEND ALERT
-    # -----------------------------------------------------
 
     if tool_name == "send_alert":
 
+        message = args.get(
+            "message"
+        )
+
+        if not message:
+            raise ValueError(
+                "ไม่พบข้อความแจ้งเตือน"
+            )
+
         provider = send_notification(
-            args["message"]
+            message
         )
 
         return (
-            "ส่งข้อความแจ้งเตือนผ่าน "
+            f"ส่งข้อความแจ้งเตือนผ่าน "
             f"{provider} สำเร็จ"
         )
 
@@ -463,12 +532,8 @@ def dispatch_tool(
 
 def main() -> int:
 
-    load_dotenv()
-
     parser = argparse.ArgumentParser(
-        description=(
-            "DropExpress Agent Harness"
-        )
+        description="DropExpress Agent Harness"
     )
 
     parser.add_argument(
@@ -492,10 +557,6 @@ def main() -> int:
 
     try:
 
-        # -------------------------------------------------
-        # Gemini Parse
-        # -------------------------------------------------
-
         tool_call = parse_command(
             command
         )
@@ -510,10 +571,6 @@ def main() -> int:
             "llm_response",
             tool_call,
         )
-
-        # -------------------------------------------------
-        # Execute Tool
-        # -------------------------------------------------
 
         result = dispatch_tool(
             tool_call
@@ -532,9 +589,7 @@ def main() -> int:
         write_trace(
             "tool_result",
             {
-                "tool": tool_call[
-                    "tool"
-                ],
+                "tool": tool_call["tool"],
                 "result": result,
             },
         )
@@ -551,9 +606,7 @@ def main() -> int:
         write_trace(
             "tool_error",
             {
-                "error_type": type(
-                    exc
-                ).__name__,
+                "error_type": type(exc).__name__,
                 "message": str(exc),
             },
         )
